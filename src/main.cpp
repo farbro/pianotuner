@@ -1,9 +1,9 @@
-#define BRAKE_PIN 1
-#define MOTOR_PIN 2
+#define BRAKE_PIN 12
+#define MOTOR_PIN 13
 #define LOOP_PERIOD 10
 
 #include <Arduino.h>
-#include <Servo.h>
+#include <ESP32Servo.h>
 #ifdef ESP32
 #include <WiFi.h>
 #include <AsyncTCP.h>
@@ -85,9 +85,15 @@ void setup() {
         request->send(200, "text/plain", "OK");
     });
 
-    server.onNotFound(notFound);
+  server.onNotFound(notFound);
 
-    server.begin();
+  server.begin();
+
+  // Allow allocation of all timers
+	ESP32PWM::allocateTimer(0);
+	ESP32PWM::allocateTimer(1);
+	ESP32PWM::allocateTimer(2);
+	ESP32PWM::allocateTimer(3);
 
   brake.attach(BRAKE_PIN);
   motor.attach(MOTOR_PIN);
@@ -95,6 +101,7 @@ void setup() {
 
 void loop() {
   int t;
+  int motor_speed, brake_position;
 
   switch (state) {
     case RESET:
@@ -110,28 +117,30 @@ void loop() {
       start_time = millis();
 
       state = ACCELERATE;
+      break;
 
     case ACCELERATE:
       t = millis() - start_time;
-      int motor_speed = constrain(params.motor_start_speed + t/1000.0*params.motor_acceleration, 0, 100);
+      motor_speed = constrain(params.motor_start_speed + t/1000.0*params.motor_acceleration, 0, 100);
       motor.write(map(motor_speed, 0, 100, 0, 180));
 
       if (t >= params.brake_delay) {
         motor.write(0);
         brake_time = millis();
         state = BRAKE;
-        break;
       }
+      break;
 
     case BRAKE:
       t = millis() - brake_time;
       
-      int brake_position = constrain(t/1000.0*params.brake_speed, 0, 100);
+      brake_position = constrain(t/1000.0*params.brake_speed, 0, 100);
       brake.write(map(brake_position, 0, 100, 0, 180));
       
       if (t >= params.release_delay) {
         state = RESET;
       }
+      break;
   }
 
   delay(LOOP_PERIOD);
