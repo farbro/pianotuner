@@ -25,7 +25,7 @@ typedef struct {
   int motor_acceleration = 1000;
   int brake_speed = 100;
   int motor_start_speed = 0;
-  int brake_delay = 3000;
+  int brake_delay = 1000;
   int release_delay = 2000;
 } RunParams;
 
@@ -34,12 +34,13 @@ enum STATES {
   IDLE,
   RUN,
   ACCELERATE,
+  WAIT,
   BRAKE
 };
 
 
 int state = RESET;
-unsigned long start_time = 0, brake_time = 0;
+unsigned long t0 = 0;
 RunParams params;
 
 void notFound(AsyncWebServerRequest *request) {
@@ -49,6 +50,7 @@ void notFound(AsyncWebServerRequest *request) {
 void updateParam(int *param, const char* key, AsyncWebServerRequest *request) {
   if (request->hasParam(key)) {
     *param = request->getParam(key)->value().toInt();
+    Serial.printf("Setting parameter %s = %d\n", key, *param);
   }
 }
 
@@ -67,22 +69,35 @@ void setup() {
 
   // Send a GET request to <IP>/get?message=<message>
     server.on("/run", HTTP_GET, [] (AsyncWebServerRequest *request) {
+
+        Serial.println("Run requested");
+
         RunParams new_params;
 
-        updateParam(&(params.motor_speed), "motorSpeed", request);
-        updateParam(&(params.motor_start_speed), "motor_start_speed", request);
-        updateParam(&(params.motor_acceleration), "motorAcceleration", request);
-        updateParam(&(params.brake_speed), "brakeSpeed", request);
-        updateParam(&(params.brake_delay), "brakeDelay", request);
-        updateParam(&(params.release_delay), "releaseDelay", request);
+        updateParam(&(new_params.motor_speed), "motorSpeed", request);
+        updateParam(&(new_params.motor_start_speed), "motor_start_speed", request);
+        updateParam(&(new_params.motor_acceleration), "motorAcceleration", request);
+        updateParam(&(new_params.brake_speed), "brakeSpeed", request);
+        updateParam(&(new_params.brake_delay), "brakeDelay", request);
+        updateParam(&(new_params.release_delay), "releaseDelay", request);
+
 
         if (state == IDLE) {
+
+          Serial.println("Starting run...");
+          Serial.printf("motor_speed = %d\n", new_params.motor_speed);
+          Serial.printf("motor_start_speed = %d\n", new_params.motor_start_speed);
+          Serial.printf("motor_acceleration = %d\n", new_params.motor_acceleration);
+          Serial.printf("motor_brake_speed = %d\n", new_params.brake_speed);
+          Serial.printf("motor_speed = %d\n", new_params.motor_speed);
+          Serial.printf("brake_delay = %d\n", new_params.brake_delay);
+          Serial.printf("release_delay = %d\n", new_params.release_delay);
 
           state = RUN;
           params = new_params;
         }
 
-        request->send(200, "text/plain", "OK");
+        request->send(204);
     });
 
   server.onNotFound(notFound);
@@ -95,50 +110,70 @@ void setup() {
 	ESP32PWM::allocateTimer(2);
 	ESP32PWM::allocateTimer(3);
 
-  brake.attach(BRAKE_PIN);
-  motor.attach(MOTOR_PIN);
+  brake.attach(BRAKE_PIN, BRAKE_MIN, BRAKE_MAX);
+  motor.attach(MOTOR_PIN, MOTOR_MIN, MOTOR_MAX);
 }
 
 void loop() {
   int t;
   int motor_speed, brake_position;
 
+  t = millis() - t0;
+
   switch (state) {
     case RESET:
+      Serial.println("RESET");
+
       motor.write(0);
       brake.write(0);
 
       state = IDLE; break;
+      Serial.println("IDLE");
 
     case IDLE:
       break;
 
     case RUN:
-      start_time = millis();
+      t0 = millis();
 
       state = ACCELERATE;
+        Serial.println("ACCELERATE");
       break;
 
     case ACCELERATE:
-      t = millis() - start_time;
-      motor_speed = constrain(params.motor_start_speed + t/1000.0*params.motor_acceleration, 0, 100);
+      t = millis() - t0;
+      motor_speed = constrain(params.motor_start_speed + t/1000.0*params.motor_acceleration, 0, params.motor_speed);
       motor.write(map(motor_speed, 0, 100, 0, 180));
 
+      Serial.printf("motor_speed = %d\n", motor.read());
+
+      if (motor_speed >= params.motor_speed) {
+        t0 = millis();
+        state = WAIT;
+        Serial.println("WAIT");
+      }
+      break;
+
+    case WAIT:
       if (t >= params.brake_delay) {
         motor.write(0);
-        brake_time = millis();
+        t0 = millis();
         state = BRAKE;
+        Serial.println("BRAKE");
       }
       break;
 
     case BRAKE:
-      t = millis() - brake_time;
       
       brake_position = constrain(t/1000.0*params.brake_speed, 0, 100);
       brake.write(map(brake_position, 0, 100, 0, 180));
+
+      Serial.printf("brake_position = %d\n", brake.read());
       
       if (t >= params.release_delay) {
         state = RESET;
+
+        Serial.println("RESET");
       }
       break;
   }
