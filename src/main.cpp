@@ -10,6 +10,8 @@
 #include <ESPAsyncTCP.h>
 #endif
 #include <ESPAsyncWebServer.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 
 #include "config.h"
 
@@ -35,7 +37,7 @@ typedef struct {
   float freespin_duration = 0.5; // s
   float brake_holding_duration = 2; // s
 
-  float brake_speed = 1; // fraction/s
+  float brake_speed = -1; // fraction/s
   float brake1_center = 97; // deg
   float brake1_min = 0; // deg
   float brake1_max = 180; // deg
@@ -59,6 +61,8 @@ enum STATES {
 
 int state = RESET;
 unsigned long t0 = 0;
+unsigned long last_run = 0;
+int direction = 1;
 RunParams params;
 
 void notFound(AsyncWebServerRequest *request) {
@@ -96,9 +100,9 @@ void setBrake1(float value) {
   float raw = params.brake1_center;
 
   if (value > 0)
-    raw = value*(params.brake1_max - params.brake1_center);
+    raw += value*(params.brake1_max - params.brake1_center);
   else if (value < 0)
-    raw = -value*(params.brake1_center - params.brake1_min);
+    raw += value*(params.brake1_center - params.brake1_min);
 
   Serial.printf("brake1 = %f (%f)\n", value, raw);
   brake1.write(raw);
@@ -112,9 +116,9 @@ void setBrake2(float value) {
   float raw = params.brake2_center;
 
   if (value > 0)
-    raw = value*(params.brake2_max - params.brake2_center);
+    raw += value*(params.brake2_max - params.brake2_center);
   else if (value < 0)
-    raw = -value*(params.brake2_center - params.brake2_min);
+    raw += value*(params.brake2_center - params.brake2_min);
 
   Serial.printf("brake2 = %f (%f)\n", value, raw);
   brake2.write(raw);
@@ -124,7 +128,9 @@ void setup() {
 
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  WiFi.setHostname(HOSTNAME);
   if (WiFi.waitForConnectResult() != WL_CONNECTED) {
       Serial.printf("WiFi Failed!\n");
       return;
@@ -132,6 +138,8 @@ void setup() {
 
   Serial.print("IP Address: ");
   Serial.println(WiFi.localIP());
+  Serial.print("Hostname: ");
+  Serial.println(WiFi.getHostname());
 
   // Send a GET request to <IP>/get?message=<message>
     server.on("/run", HTTP_GET, [] (AsyncWebServerRequest *request) {
@@ -227,91 +235,124 @@ void setup() {
   brake1.attach(BRAKE1_PIN, BRAKE1_MIN, BRAKE1_MAX);
   brake2.attach(BRAKE2_PIN, BRAKE2_MIN, BRAKE2_MAX);
   motor.attach(MOTOR_PIN, MOTOR_MIN, MOTOR_MAX);
+
+
+  ArduinoOTA
+    .setMdnsEnabled(false)
+    .setPort(OTA_PORT)
+    .onStart([]() {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else // U_SPIFFS
+        type = "filesystem";
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type);
+    })
+    .onEnd([]() {
+      Serial.println("\nEnd");
+    })
+    .onProgress([](unsigned int progress, unsigned int total) {
+      Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    })
+    .onError([](ota_error_t error) {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+
+  ArduinoOTA.begin();
 }
 
 void loop() {
   unsigned long t;
   float motor_speed, brake_position;
-  int direction = 1;
 
-  t = millis() - t0;
+  if (millis() - last_run > LOOP_PERIOD) {
+    last_run = millis();
+    t = millis() - t0;
 
-  switch (state) {
-    case RESET:
-      Serial.println("RESET");
-
-      setMotor(0);
-      setBrake1(0);
-      setBrake2(0);
-
-      state = IDLE; break;
-      Serial.println("IDLE");
-
-    case IDLE:
-      break;
-
-    case RUN:
-      t0 = millis();
-
-      state = ACCELERATE;
-      Serial.println("ACCELERATE");
-      if (params.motor_speed >= 0) {
-        direction = 1;
-      } else {
-        direction = -1;
-      }
-      break;
-
-    case ACCELERATE:
-      motor_speed = t/1000.0*params.motor_acceleration;
-      setMotor(motor_speed*direction);
-
-      if (motor_speed >= abs(params.motor_speed)) {
-        t0 = millis();
-        state = MAXSPEED;
-        Serial.println("WAIT");
-      }
-      break;
-
-    case MAXSPEED:
-      if (t >= params.motor_maxspeed_duration*1000) {
-        motor.write(0);
-        t0 = millis();
-        state = FREESPIN;
-        Serial.println("FREESPIN");
-      }
-      break;
-
-    case FREESPIN:
-      if (t >= params.freespin_duration*1000) {
-        t0 = millis();
-        state = BRAKE;
-        Serial.println("BRAKE");
-      }
-      break;
-
-
-    case BRAKE:
-      brake_position = t/1000.0*params.brake_speed*direction;
-      setBrake1(brake_position);
-      setBrake2(brake_position);
-      
-      if (brake_position >= 1) {
-        t0 = millis();
-        state = HOLD;
-        Serial.println("HOLD");
-      }
-      break;
-
-    case HOLD:
-      if (t >= params.brake_holding_duration*1000) {
-        state = RESET;
-
+    switch (state) {
+      case RESET:
         Serial.println("RESET");
-      }
-      
+
+        setMotor(0);
+        setBrake1(0);
+        setBrake2(0);
+
+        state = IDLE; break;
+        Serial.println("IDLE");
+
+      case IDLE:
+        break;
+
+      case RUN:
+        t0 = millis();
+
+        state = ACCELERATE;
+        Serial.println("ACCELERATE");
+        if (params.motor_speed >= 0) {
+          direction = 1;
+        } else {
+          direction = -1;
+        }
+        break;
+
+      case ACCELERATE:
+        motor_speed = t/1000.0*params.motor_acceleration;
+        setMotor(motor_speed*direction);
+
+        if (motor_speed >= abs(params.motor_speed)) {
+          t0 = millis();
+          state = MAXSPEED;
+          Serial.println("WAIT");
+        }
+        break;
+
+      case MAXSPEED:
+        if (t >= params.motor_maxspeed_duration*1000) {
+          setMotor(0);
+          t0 = millis();
+          state = FREESPIN;
+          Serial.println("FREESPIN");
+        }
+        break;
+
+      case FREESPIN:
+        if (t >= params.freespin_duration*1000) {
+          t0 = millis();
+          state = BRAKE;
+          Serial.println("BRAKE");
+        }
+        break;
+
+
+      case BRAKE:
+        brake_position = t/1000.0*params.brake_speed*direction;
+        setBrake1(brake_position);
+        setBrake2(brake_position);
+        
+        if (brake_position >= 1 || brake_position <= -1) {
+          t0 = millis();
+          state = HOLD;
+          Serial.println("HOLD");
+        }
+        break;
+
+      case HOLD:
+        if (t >= params.brake_holding_duration*1000) {
+          state = RESET;
+
+          Serial.println("RESET");
+        }
+        
+    }
   }
 
-  delay(LOOP_PERIOD);
+  ArduinoOTA.handle();
 }
 
