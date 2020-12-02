@@ -25,14 +25,14 @@ typedef struct {
   float motor_speed = 0.5; // fraction/s
   float motor_acceleration = 0.1; // fraction/s^2
   
-  float motor_warmup_duration = 1.5; // s
+  float motor_warmup_duration = 2; // s
 
-  float motor_forward_stall = 56; // 0 - 180
+  float motor_forward_stall = 65; // 0 - 180
   float motor_standstill = 0;
   float motor_forward_max = 170;
 
-  float motor_maxspeed_duration = 1; // s
-  float freespin_duration = 0.1; // s
+  float motor_maxspeed_duration = 4; // s
+  float freespin_duration = 0; // s
   float brake_holding_duration = 0.3; // s
 
   float brake_speed = 100; // fraction/s
@@ -49,6 +49,7 @@ enum STATES {
   RESET,
   IDLE,
   RUN,
+  STARTUP,
   ACCELERATE,
   SET_DIRECTION,
   MAXSPEED,
@@ -312,7 +313,14 @@ void loop() {
 
         if (t >= RELAY_SWITCHING_TIME*1000) {
           t0 = millis();
+          setMotor(0.01*direction);
+          state = STARTUP;
+        }
+        break;
+      case STARTUP:
+        if (t >= params.motor_warmup_duration*1000) {
           state = ACCELERATE;
+          t0 = millis();
         }
         break;
 
