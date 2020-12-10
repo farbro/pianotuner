@@ -34,8 +34,19 @@ typedef struct {
   float motor_maxspeed_duration = 4; // s
   float freespin_duration = 0; // s
   float brake_holding_duration = 0.3; // s
+  float motor_warmup_duration = 2; // s
 
-  float brake_speed = 100; // fraction/s
+  float motor_forward_stall = 99; // 0 - 180
+  float motor_backward_stall = 81; // 0 - 180
+  float motor_standstill = 90;
+  float motor_forward_max = 180;
+  float motor_backward_max = 55;
+
+  float motor_maxspeed_duration = 4; // s
+  float freespin_duration = 0; // s
+  float brake_holding_duration = 0.3; // s
+
+  float brake_speed = -1; // fraction/s
   float brake1_center = 97; // deg
   float brake1_min = 0; // deg
   float brake1_max = 180; // deg
@@ -51,7 +62,6 @@ enum STATES {
   RUN,
   STARTUP,
   ACCELERATE,
-  SET_DIRECTION,
   MAXSPEED,
   FREESPIN,
   BRAKE,
@@ -80,12 +90,13 @@ void updateParam(float *param, const char* key, AsyncWebServerRequest *request) 
 void setMotor(float value) {
 
   value = constrain(value, -1, 1);
-  value = abs(value);
 
   float raw = params.motor_standstill;
 
   if (value > 0)
     raw = params.motor_forward_stall + value*(params.motor_forward_max - params.motor_forward_stall);
+  else if (value < 0)
+    raw = params.motor_backward_stall - value*(params.motor_backward_stall - params.motor_backward_max);
 
   Serial.printf("motor = %f (%f)\n", value, raw);
   motor.write(raw);
@@ -123,10 +134,6 @@ void setBrake2(float value) {
   brake2.write(raw);
 }
 
-void setMotorDirection(int direction) {
-  digitalWrite(MOTOR_DIRECTION_PIN, direction >= 0);
-}
-
 void setup() {
 
   Serial.begin(115200);
@@ -155,8 +162,10 @@ void setup() {
         updateParam(&(new_params.motor_warmup_duration), "motor_warmup_duration", request);
         updateParam(&(new_params.motor_acceleration), "motor_acceleration", request);
         updateParam(&(new_params.motor_forward_stall), "motor_forward_stall", request);
+        updateParam(&(new_params.motor_backward_stall), "motor_backward_stall", request);
         updateParam(&(new_params.motor_standstill), "motor_standstill", request);
         updateParam(&(new_params.motor_forward_max), "motor_forward_max", request);
+        updateParam(&(new_params.motor_backward_max), "motor_backward_max", request);
         updateParam(&(new_params.freespin_duration), "freespin_duration", request);
 
         updateParam(&(new_params.motor_maxspeed_duration), "motor_maxspeed_duration", request);
@@ -220,11 +229,6 @@ void setup() {
           Serial.printf("Setting parameter %s = %d\n", "motor", motor.read());
         }
 
-        if (request->hasParam("motor_direction")) {
-          value = request->getParam("motor_direction")->value().toFloat();
-          digitalWrite(MOTOR_DIRECTION_PIN, value != 0);
-        }
-
         request->send(204);
     });
 
@@ -241,7 +245,7 @@ void setup() {
   brake1.attach(BRAKE1_PIN, BRAKE1_MIN, BRAKE1_MAX);
   brake2.attach(BRAKE2_PIN, BRAKE2_MIN, BRAKE2_MAX);
   motor.attach(MOTOR_PIN, MOTOR_MIN, MOTOR_MAX);
-  pinMode(MOTOR_DIRECTION_PIN, OUTPUT);
+
 
   ArduinoOTA
     .setMdnsEnabled(false)
@@ -299,8 +303,8 @@ void loop() {
       case RUN:
         t0 = millis();
 
-        state = SET_DIRECTION;
-        Serial.println("SET_DIRECTION");
+        state = STARTUP;
+        Serial.println("ACCELERATE");
         if (params.motor_speed >= 0) {
           direction = 1;
         } else {
@@ -308,15 +312,6 @@ void loop() {
         }
         break;
 
-      case SET_DIRECTION:
-        setMotorDirection(direction);
-
-        if (t >= RELAY_SWITCHING_TIME*1000) {
-          t0 = millis();
-          setMotor(0.01*direction);
-          state = STARTUP;
-        }
-        break;
       case STARTUP:
         if (t >= params.motor_warmup_duration*1000) {
           state = ACCELERATE;
