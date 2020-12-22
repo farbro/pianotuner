@@ -23,31 +23,21 @@ Servo motor;
 
 typedef struct {
   float motor_speed = 0.5; // fraction/s
-  float motor_acceleration = 0.1; // fraction/s^2
-  
-  float motor_warmup_duration = 2; // s
-
-  float motor_forward_stall = 65; // 0 - 180
-  float motor_standstill = 0;
-  float motor_forward_max = 170;
+  float motor_acceleration = 0.04; // fraction/s^2
 
   float motor_maxspeed_duration = 4; // s
   float freespin_duration = 0; // s
   float brake_holding_duration = 0.3; // s
-  float motor_warmup_duration = 2; // s
+  float motor_warmup_duration = 1; // s
 
-  float motor_forward_stall = 99; // 0 - 180
-  float motor_backward_stall = 81; // 0 - 180
+  float motor_forward_stall = 106; // 0 - 180
+  float motor_backward_stall = 74; // 0 - 180
   float motor_standstill = 90;
   float motor_forward_max = 180;
-  float motor_backward_max = 55;
+  float motor_backward_max = 0;
 
-  float motor_maxspeed_duration = 4; // s
-  float freespin_duration = 0; // s
-  float brake_holding_duration = 0.3; // s
-
-  float brake_speed = -1; // fraction/s
-  float brake1_center = 97; // deg
+  float brake_speed = -100; // fraction/s
+  float brake1_center = 90; // deg
   float brake1_min = 0; // deg
   float brake1_max = 180; // deg
 
@@ -89,6 +79,10 @@ void updateParam(float *param, const char* key, AsyncWebServerRequest *request) 
 // Set motor value (-1 to 1))
 void setMotor(float value) {
 
+  #ifdef REVERSE_MOTOR
+    value *= -1;
+  #endif
+
   value = constrain(value, -1, 1);
 
   float raw = params.motor_standstill;
@@ -96,7 +90,7 @@ void setMotor(float value) {
   if (value > 0)
     raw = params.motor_forward_stall + value*(params.motor_forward_max - params.motor_forward_stall);
   else if (value < 0)
-    raw = params.motor_backward_stall - value*(params.motor_backward_stall - params.motor_backward_max);
+    raw = params.motor_backward_stall + value*(params.motor_backward_stall - params.motor_backward_max);
 
   Serial.printf("motor = %f (%f)\n", value, raw);
   motor.write(raw);
@@ -282,6 +276,7 @@ void loop() {
   unsigned long t;
   float motor_speed, brake_position;
 
+
   if (millis() - last_run > LOOP_PERIOD) {
     last_run = millis();
     t = millis() - t0;
@@ -304,7 +299,7 @@ void loop() {
         t0 = millis();
 
         state = STARTUP;
-        Serial.println("ACCELERATE");
+        Serial.println("STARTUP");
         if (params.motor_speed >= 0) {
           direction = 1;
         } else {
@@ -314,6 +309,7 @@ void loop() {
 
       case STARTUP:
         if (t >= params.motor_warmup_duration*1000) {
+          Serial.println("ACCELERATE");
           state = ACCELERATE;
           t0 = millis();
         }
