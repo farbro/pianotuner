@@ -65,6 +65,12 @@ unsigned long last_run = 0;
 int direction = 1;
 RunParams params;
 
+long maxCycleTime = 0;
+long minCycleTime = LONG_MAX;
+long avgCycleTime = 0;
+long lastCycle = 0;
+int cycles = 0;
+
 void notFound(AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
 }
@@ -276,6 +282,33 @@ void loop() {
   unsigned long t;
   float motor_speed, brake_position;
 
+  // Meaure cycle time
+  long cycleTime = micros() - lastCycle;
+  lastCycle = micros();
+
+  if (cycleTime > maxCycleTime)
+    maxCycleTime = cycleTime;
+
+  if (cycleTime < minCycleTime)
+    minCycleTime = cycleTime;
+  
+  avgCycleTime += cycleTime;
+
+  if (cycles >= CYCLE_TIME_REPORT_INTERVAL) {
+    avgCycleTime /= cycles;
+    cycles = 0;
+    
+    Serial.printf("Avg cycle time:\t%ld\n", avgCycleTime);
+    Serial.printf("Max cycle time:\t%ld\n", maxCycleTime);
+    Serial.printf("Min cycle time:\t%ld\n", minCycleTime);
+
+    avgCycleTime = 0;
+    maxCycleTime = 0;
+    minCycleTime = LONG_MAX;
+  }
+
+
+  cycles++;
 
   if (millis() - last_run > LOOP_PERIOD) {
     last_run = millis();
