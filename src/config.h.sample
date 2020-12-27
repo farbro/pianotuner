@@ -4,10 +4,12 @@
 #define HOSTNAME "pianotuner"
 #define OTA_PORT 3232
 
-#define MOTOR_MIN 1000
-#define MOTOR_MAX 2000
 #define MOTOR_PIN 14
+#define MOTOR_REV_PIN 27
 #define REVERSE_MOTOR
+#define MOTOR_AVG_RATIO 0.2
+
+#define ACCELERATION_TIMEOUT 20
 
 #define BRAKE1_MIN 500
 #define BRAKE1_MAX 2400
@@ -18,3 +20,5 @@
 #define BRAKE1_PIN 12
 #define BRAKE2_PIN 13
 #define LOOP_PERIOD 10
+
+#define CYCLE_TIME_REPORT_INTERVAL 10000

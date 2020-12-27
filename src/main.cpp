@@ -23,18 +23,20 @@ Servo motor;
 
 typedef struct {
   float motor_speed = 0.5; // fraction/s
-  float motor_acceleration = 0.04; // fraction/s^2
+  float motor_acceleration = 5; // rad/s²
 
-  float motor_maxspeed_duration = 4; // s
-  float freespin_duration = 0; // s
   float brake_holding_duration = 0.3; // s
-  float motor_warmup_duration = 1; // s
 
-  float motor_forward_stall = 106; // 0 - 180
-  float motor_backward_stall = 74; // 0 - 180
-  float motor_standstill = 90;
-  float motor_forward_max = 180;
-  float motor_backward_max = 0;
+  float motor_standstill = 1500; // ppm µs period
+  float motor_forward_max = 2000; // ppm µs period
+  float motor_backward_max = 1000; // ppm µs period
+  float motor_control_period = 100; // ms
+  float motor_pid_kp = 15;
+  float motor_pid_ki = 0.5;
+  float motor_pid_kd = 0;
+  float motor_max_error = 0.1; // rad/s
+
+  float in_target_duration = 0.2; // s
 
   float brake_speed = -100; // fraction/s
   float brake1_center = 90; // deg
@@ -50,10 +52,7 @@ enum STATES {
   RESET,
   IDLE,
   RUN,
-  STARTUP,
   ACCELERATE,
-  MAXSPEED,
-  FREESPIN,
   BRAKE,
   HOLD
 };
@@ -65,11 +64,26 @@ unsigned long last_run = 0;
 int direction = 1;
 RunParams params;
 
-long maxCycleTime = 0;
-long minCycleTime = LONG_MAX;
-long avgCycleTime = 0;
-long lastCycle = 0;
-int cycles = 0;
+unsigned long maxCycleTime = 0;
+unsigned long minCycleTime = LONG_MAX;
+unsigned long avgCycleTime = 0;
+unsigned long lastCycle = 0;
+unsigned int cycles = 0;
+unsigned long lastSpeedReport = 0;
+
+unsigned long lastMotorRevTime = 0;
+bool lastMotorRevValue = 0;
+float targetMotorSpeed = 0;
+float currentMotorSpeed = 0;
+float lastMotorError = 0;
+float rampingMotorSpeed = 0;
+unsigned long lastMotorControl = 0;
+int num_attempts = 0;
+
+unsigned long lastOffTarget = 0;
+
+float motorPID_i = 0;
+
 
 void notFound(AsyncWebServerRequest *request) {
     request->send(404, "text/plain", "Not found");
@@ -83,24 +97,59 @@ void updateParam(float *param, const char* key, AsyncWebServerRequest *request) 
 }
 
 // Set motor value (-1 to 1))
-void setMotor(float value) {
+void setMotor(float v) {
 
   #ifdef REVERSE_MOTOR
-    value *= -1;
+    v *= -1;
   #endif
+  
+  targetMotorSpeed = v;
 
-  value = constrain(value, -1, 1);
-
-  float raw = params.motor_standstill;
-
-  if (value > 0)
-    raw = params.motor_forward_stall + value*(params.motor_forward_max - params.motor_forward_stall);
-  else if (value < 0)
-    raw = params.motor_backward_stall + value*(params.motor_backward_stall - params.motor_backward_max);
-
-  Serial.printf("motor = %f (%f)\n", value, raw);
-  motor.write(raw);
 }
+
+void controlMotor() {
+  unsigned long period = millis() - lastMotorControl;
+
+  if (targetMotorSpeed == 0) {
+    motor.write(params.motor_standstill);
+    rampingMotorSpeed = 0;
+    lastMotorError = 0;
+    motorPID_i = 0;
+    return;
+  }
+
+  if (period > params.motor_control_period) {
+    lastMotorControl = millis();
+
+    // Ramp the speed
+    float rampingError = abs(targetMotorSpeed) - rampingMotorSpeed;
+    float maxAcceleration = params.motor_acceleration*params.motor_control_period/1000;
+    rampingMotorSpeed += constrain(rampingError, -maxAcceleration, maxAcceleration);
+
+    float error = abs(rampingMotorSpeed) - currentMotorSpeed;
+    
+    float P = params.motor_pid_kp*error;
+
+    motorPID_i += error;
+    float I = params.motor_pid_ki*motorPID_i;
+    float D = 0;
+
+    lastMotorError = error;
+
+    float output =  P + I + D;
+
+    if (targetMotorSpeed < 0)
+      output *= -1;
+
+    float targetMotorPPM = constrain(params.motor_standstill + output, params.motor_backward_max, params.motor_forward_max);
+
+
+    motor.writeMicroseconds(targetMotorPPM);
+    //Serial.printf("rampingMotorSpeed=%f\ttargetMotorSpeed=%f\trampingError=%f\tP=%f\tI=%f\tD=%f\tppm=%f\n", rampingMotorSpeed, targetMotorSpeed, rampingError, P, I, D, targetMotorPPM);
+  
+  }
+}
+
 
 // Set brake1 value (-1 to 1)
 void setBrake1(float value) {
@@ -159,16 +208,15 @@ void setup() {
         RunParams new_params;
 
         updateParam(&(new_params.motor_speed), "motor_speed", request);
-        updateParam(&(new_params.motor_warmup_duration), "motor_warmup_duration", request);
         updateParam(&(new_params.motor_acceleration), "motor_acceleration", request);
-        updateParam(&(new_params.motor_forward_stall), "motor_forward_stall", request);
-        updateParam(&(new_params.motor_backward_stall), "motor_backward_stall", request);
         updateParam(&(new_params.motor_standstill), "motor_standstill", request);
         updateParam(&(new_params.motor_forward_max), "motor_forward_max", request);
         updateParam(&(new_params.motor_backward_max), "motor_backward_max", request);
-        updateParam(&(new_params.freespin_duration), "freespin_duration", request);
 
-        updateParam(&(new_params.motor_maxspeed_duration), "motor_maxspeed_duration", request);
+        updateParam(&(new_params.motor_pid_ki), "motor_pid_ki", request);
+        updateParam(&(new_params.motor_pid_kp), "motor_pid_kp", request);
+        updateParam(&(new_params.motor_max_error), "motor_max_error", request);
+
         updateParam(&(new_params.brake_speed), "brake_speed", request);
         updateParam(&(new_params.brake_holding_duration), "brake_holding_duration", request);
 
@@ -226,7 +274,31 @@ void setup() {
             motor.write(value);
           else
             setMotor(value);
-          Serial.printf("Setting parameter %s = %d\n", "motor", motor.read());
+          Serial.printf("Setting parameter %s = %f\n", "motor", targetMotorSpeed);
+        }
+
+        if (request->hasParam("motor_pid_ki")) {
+          value = request->getParam("motor_pid_ki")->value().toFloat();
+          params.motor_pid_ki = value;
+          Serial.printf("Setting parameter %s = %f\n", "motor_pid_ki", value);
+        }
+
+        if (request->hasParam("motor_pid_kp")) {
+          value = request->getParam("motor_pid_kp")->value().toFloat();
+          params.motor_pid_kp = value;
+          Serial.printf("Setting parameter %s = %f\n", "motor_pid_kp", value);
+        }
+
+        if (request->hasParam("motor_pid_kd")) {
+          value = request->getParam("motor_pid_kd")->value().toFloat();
+          params.motor_pid_kd = value;
+          Serial.printf("Setting parameter %s = %f\n", "motor_pid_kd", value);
+        }
+
+        if (request->hasParam("motor_acceleration")) {
+          value = request->getParam("motor_acceleration")->value().toFloat();
+          params.motor_acceleration = value;
+          Serial.printf("Setting parameter %s = %f\n", "motor_acceleration", value);
         }
 
         request->send(204);
@@ -244,8 +316,9 @@ void setup() {
 
   brake1.attach(BRAKE1_PIN, BRAKE1_MIN, BRAKE1_MAX);
   brake2.attach(BRAKE2_PIN, BRAKE2_MIN, BRAKE2_MAX);
-  motor.attach(MOTOR_PIN, MOTOR_MIN, MOTOR_MAX);
+  motor.attach(MOTOR_PIN);
 
+  pinMode(MOTOR_REV_PIN, INPUT);
 
   ArduinoOTA
     .setMdnsEnabled(false)
@@ -276,11 +349,12 @@ void setup() {
     });
 
   ArduinoOTA.begin();
+  lastMotorRevValue = digitalRead(MOTOR_REV_PIN);
 }
 
 void loop() {
   unsigned long t;
-  float motor_speed, brake_position;
+  float brake_position;
 
   // Meaure cycle time
   long cycleTime = micros() - lastCycle;
@@ -298,81 +372,103 @@ void loop() {
     avgCycleTime /= cycles;
     cycles = 0;
     
-    Serial.printf("Avg cycle time:\t%ld\n", avgCycleTime);
-    Serial.printf("Max cycle time:\t%ld\n", maxCycleTime);
-    Serial.printf("Min cycle time:\t%ld\n", minCycleTime);
+    //Serial.printf("Avg cycle time:\t%ld\n", avgCycleTime);
+    //Serial.printf("Max cycle time:\t%ld\n", maxCycleTime);
+    //Serial.printf("Min cycle time:\t%ld\n", minCycleTime);
 
     avgCycleTime = 0;
     maxCycleTime = 0;
     minCycleTime = LONG_MAX;
   }
-
-
   cycles++;
 
+  // Calculate motor speed
+  bool currentMotorRevValue = digitalRead(MOTOR_REV_PIN);
+
+  unsigned long motorRevTime = micros() - lastMotorRevTime;
+
+  if (!lastMotorRevValue && currentMotorRevValue) {
+    lastMotorRevTime = micros();
+
+    float newMotorSpeed = 1.0/(motorRevTime*10.0e-6) * 2*3.1419; // rad/s
+    currentMotorSpeed = currentMotorSpeed*(1 - MOTOR_AVG_RATIO) + newMotorSpeed*MOTOR_AVG_RATIO;
+  }
+
+  if (motorRevTime > 1e6)
+    currentMotorSpeed = 0;
+
+  lastMotorRevValue = currentMotorRevValue;
+
+  // Report speed
+  if (millis() - lastSpeedReport > 1000) {
+    lastSpeedReport = millis();
+    Serial.printf("Motor target = %f\t current = %f\t ppm = %d\n", targetMotorSpeed, currentMotorSpeed, motor.readMicroseconds());
+  }
+
+  // Regulate motor speed
+  controlMotor();
+
+  // Run state machine
   if (millis() - last_run > LOOP_PERIOD) {
+
     last_run = millis();
     t = millis() - t0;
 
     switch (state) {
       case RESET:
-        Serial.println("RESET");
+        Serial.println("Resetting...");
 
         setMotor(0);
         setBrake1(0);
         setBrake2(0);
 
-        state = IDLE; break;
-        Serial.println("IDLE");
+        state = IDLE;
+        Serial.println("RESET -> IDLE");
+        t0 = millis();
+        num_attempts = 0;
 
       case IDLE:
         break;
 
       case RUN:
         t0 = millis();
+        Serial.printf("Run #%d\n", num_attempts);
+        num_attempts++;
 
-        state = STARTUP;
-        Serial.println("STARTUP");
+        state = ACCELERATE;
+        Serial.println("RUN -> ACCELERATE");
         if (params.motor_speed >= 0) {
           direction = 1;
         } else {
           direction = -1;
         }
-        break;
-
-      case STARTUP:
-        if (t >= params.motor_warmup_duration*1000) {
-          Serial.println("ACCELERATE");
-          state = ACCELERATE;
-          t0 = millis();
-        }
+        setMotor(params.motor_speed);
         break;
 
       case ACCELERATE:
-        motor_speed = t/1000.0*params.motor_acceleration;
-        setMotor(motor_speed*direction);
+        //Serial.printf("error=%f\t", abs(targetMotorSpeed) - currentMotorSpeed);
+        //Serial.printf("off target=%ld\n", millis() - lastOffTarget);
 
-        if (motor_speed >= abs(params.motor_speed)) {
-          t0 = millis();
-          state = MAXSPEED;
-          Serial.println("WAIT");
-        }
-        break;
-
-      case MAXSPEED:
-        if (t >= params.motor_maxspeed_duration*1000) {
-          setMotor(0);
-          t0 = millis();
-          state = FREESPIN;
-          Serial.println("FREESPIN");
-        }
-        break;
-
-      case FREESPIN:
-        if (t >= params.freespin_duration*1000) {
+        if (abs(targetMotorSpeed) - currentMotorSpeed > params.motor_max_error) {
+          lastOffTarget = millis();
+        } else if (millis() - lastOffTarget >= params.in_target_duration*1000) {
           t0 = millis();
           state = BRAKE;
-          Serial.println("BRAKE");
+          Serial.println("ACCELERATE -> BRAKE");
+          setMotor(0);
+        }
+
+        if (t > ACCELERATION_TIMEOUT*1000 && currentMotorSpeed < 1) {
+          if (num_attempts <= 3) {
+            Serial.printf("Timeout, retry %d\n", num_attempts);
+            Serial.println("ACCELERATE -> RUN");
+            setMotor(0);
+            state = RUN;
+          } else {
+            Serial.printf("Timeout, aborting after %d times \n", num_attempts);
+            Serial.println("ACCELERATE -> RESET");
+            state = RESET;
+          }
         }
         break;
 
@@ -385,7 +481,7 @@ void loop() {
         if (brake_position >= 1 || brake_position <= -1) {
           t0 = millis();
           state = HOLD;
-          Serial.println("HOLD");
+          Serial.println("BRAKE -> HOLD");
         }
         break;
 
@@ -393,7 +489,7 @@ void loop() {
         if (t >= params.brake_holding_duration*1000) {
           state = RESET;
 
-          Serial.println("RESET");
+          Serial.println("HOLD -> RESET");
         }
         
     }
