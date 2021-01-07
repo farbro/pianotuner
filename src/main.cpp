@@ -23,7 +23,7 @@ Servo motor;
 
 typedef struct {
   float motor_speed = 0.5; // fraction/s
-  float motor_acceleration = 5; // rad/s²
+  float motor_acceleration = 4; // rad/s²
 
   float brake_holding_duration = 0.3; // s
 
@@ -90,8 +90,8 @@ void notFound(AsyncWebServerRequest *request) {
 }
 
 void updateParam(float *param, const char* key, AsyncWebServerRequest *request) {
-  if (request->hasParam(key)) {
-    *param = request->getParam(key)->value().toFloat();
+  if (request->hasParam(key, true)) {
+    *param = request->getParam(key, true)->value().toFloat();
     Serial.printf("Setting parameter %s = %f\n", key, *param);
   }
 }
@@ -201,7 +201,7 @@ void setup() {
   Serial.println(WiFi.getHostname());
 
   // Send a GET request to <IP>/get?message=<message>
-    server.on("/run", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    server.on("/run", HTTP_POST, [] (AsyncWebServerRequest *request) {
 
         Serial.println("Run requested");
 
@@ -241,7 +241,7 @@ void setup() {
 
 
     // Set outputs (for testing)
-    server.on("/set", HTTP_GET, [] (AsyncWebServerRequest *request) {
+    server.on("/set", HTTP_POST, [] (AsyncWebServerRequest *request) {
         Serial.println("Setting outputs");
 
         int raw = 0;
